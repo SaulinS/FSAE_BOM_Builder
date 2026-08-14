@@ -115,6 +115,3 @@ Only after the steps above work, run:
 ```bash
 python extract_and_build.py --template path\to\template.xlsx --out path\to\output.xlsx
 ```
-
-## Author
-Saulo Sousa Cunha, Member @ TEC Racing FSAE team
