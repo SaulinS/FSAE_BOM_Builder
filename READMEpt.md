@@ -119,8 +119,3 @@ Só depois dos passos acima funcionarem, rodem:
 ```bash
 python extract_and_build.py --template caminho\para\template.xlsx --out caminho\para\saida.xlsx
 ```
-
-## Autor
-
-Construído como parte do ferramental de uma equipe FSAE, por um estudante
-de Engenharia da Computação.
