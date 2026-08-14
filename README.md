@@ -117,5 +117,4 @@ python extract_and_build.py --template path\to\template.xlsx --out path\to\outpu
 ```
 
 ## Author
-
-Built as part of an FSAE team's tooling, by a Computer Engineering student.
+Saulo Sousa Cunha, Member @ TEC Racing FSAE team
