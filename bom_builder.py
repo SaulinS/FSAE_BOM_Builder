@@ -23,6 +23,13 @@ ESCOPO DESTE PROTOTIPO (combinado com o time):
   nao e encontrado no catalogo, ou e encontrado mas nao tem nem formula nem
   custo fixo definidos -- nesses casos entra como aviso na lista de warnings
   retornada por create_part_sheet.
+- Quando a formula do catalogo exige uma dimensao (Size1/Size2/Area/Length/
+  Density), a formula gerada sai protegida por uma guarda que devolve NA()
+  se a celula correspondente estiver vazia, e a falta tambem entra como
+  aviso na geracao. Sem isso, uma dimensao nao preenchida faria o Excel
+  multiplicar por celula vazia (= 0) e o material entraria custando 0,00
+  sem erro nenhum -- ver _material_unitcost_formula para o porque e para os
+  numeros medidos no catalogo real.
 
 LIMITACAO CONHECIDA (documentada, nao escondida):
 - A insercao de uma peca nova desloca linhas da aba BOM. O script recalcula
@@ -99,38 +106,78 @@ def _load_catalog_names(wb, sheet_name, name_col_idx):
     return names
 
 
+# Tokens da coluna 'Formula' do catalogo que dependem de um valor
+# preenchido NA LINHA DA PECA (nao de um coeficiente do catalogo), com a
+# coluna da aba de peca onde esse valor mora e o campo correspondente do
+# dicionario `part` que alimenta create_part_sheet.
+_DIMENSION_TOKENS = {
+    "[Size1]":   ("E", "size1"),
+    "[Size2]":   ("G", "size2"),
+    "[Area]":    ("J", "area"),
+    "[Length]":  ("K", "length"),
+    "[Density]": ("L", "density"),
+}
+
+
 def _material_unitcost_formula(materials_catalog, material_name, row):
     """
     Monta a formula de UnitCost de uma linha de material substituindo os
-    tokens [C1]/[C2]/[Size1]/[Size2] da coluna 'Formula' do catalogo por
-    referencias reais (VLOOKUP para os coeficientes, celulas E/G da propria
-    linha para os tamanhos). Retorna None se o material nao for encontrado
-    no catalogo ou nao tiver formula/custo definidos.
+    tokens [C1]/[C2]/[Size1]/[Size2]/[Area]/[Length]/[Density] da coluna
+    'Formula' do catalogo por referencias reais (VLOOKUP para os
+    coeficientes, celulas da propria linha para as dimensoes).
+
+    Retorna (formula, tokens_exigidos), onde `tokens_exigidos` sao os
+    tokens de dimensao que a formula usa -- quem chama precisa disso para
+    conferir se a peca realmente forneceu esses campos. A formula e None se
+    o material nao for encontrado no catalogo ou nao tiver formula/custo.
+
+    PROTECAO CONTRA CUSTO ZERO SILENCIOSO: uma dimensao que a formula exige
+    mas ninguem preencheu deixa a celula vazia, e o Excel trata celula vazia
+    como 0 numa multiplicacao -- o custo do material vira 0,00 sem erro
+    nenhum, e o subtotal so fica "baixo" em vez de obviamente quebrado.
+    Medido no catalogo real da FSAE Brasil 2026, 119 dos 1091 materiais
+    (10,9%) caem nesse caso pela extracao automatica, quase todos por causa
+    de [Size2]. Por isso a formula sai embrulhada numa guarda que devolve
+    NA() quando qualquer celula exigida estiver vazia: #N/A propaga pelo
+    SUM, entao o subtotal e o total do veiculo quebram de forma visivel em
+    vez de mentir para baixo. A guarda tambem protege contra alguem apagar
+    o valor depois, no Excel -- o que a validacao em tempo de geracao,
+    sozinha, nao pegaria.
     """
     info = materials_catalog.get(material_name)
     if info is None:
-        return None
+        return None, []
 
     cost = info["cost"]
     if isinstance(cost, (int, float)):
-        # Custo fixo (ex.: item comprado, "unit"): so precisa da VLOOKUP.
-        return f"=VLOOKUP(B{row},Materials!C:M,11,FALSE)"
+        # Custo fixo (ex.: item comprado, "unit"): so precisa da VLOOKUP,
+        # nao depende de nenhuma dimensao da linha.
+        return f"=VLOOKUP(B{row},Materials!C:M,11,FALSE)", []
 
     formula_text = info["formula"]
     if not formula_text or not isinstance(formula_text, str):
-        return None
+        return None, []
 
     expr = formula_text.lstrip("=")
     c1_ref = f"VLOOKUP(B{row},Materials!C:J,8,FALSE)"
     c2_ref = f"VLOOKUP(B{row},Materials!C:K,9,FALSE)"
     expr = expr.replace("[C1]", f"({c1_ref})")
     expr = expr.replace("[C2]", f"({c2_ref})")
-    expr = expr.replace("[Size1]", f"E{row}")
-    expr = expr.replace("[Size2]", f"G{row}")
-    expr = expr.replace("[Area]", f"J{row}")
-    expr = expr.replace("[Length]", f"K{row}")
-    expr = expr.replace("[Density]", f"L{row}")
-    return "=" + expr
+
+    required = []
+    for token, (col, _field) in _DIMENSION_TOKENS.items():
+        if token in expr:
+            required.append(token)
+            expr = expr.replace(token, f"{col}{row}")
+
+    if not required:
+        return "=" + expr, []
+
+    # Guarda: se qualquer celula exigida estiver vazia, NA() em vez de 0.
+    guard = ",".join(f'{_DIMENSION_TOKENS[t][0]}{row}=""' for t in required)
+    if len(required) > 1:
+        guard = f"OR({guard})"
+    return f"=IF({guard},NA(),{expr})", required
 
 
 # ---------------------------------------------------------------------------
@@ -216,9 +263,26 @@ def create_part_sheet(wb, template_sheet_name, new_sheet_name, part,
                 f"Material '{mat_name}' (linha {r}, aba {new_sheet_name}) "
                 f"nao encontrado no catalogo 'Materials' -- revisar nome."
             )
-        uc_formula = _material_unitcost_formula(materials_catalog, mat_name, r)
+        uc_formula, required_tokens = _material_unitcost_formula(
+            materials_catalog, mat_name, r)
         if uc_formula:
             ws.cell(row=r, column=4, value=uc_formula)
+        # Confere agora, na geracao, se a peca forneceu tudo o que a formula
+        # do catalogo exige -- ver _material_unitcost_formula. A guarda NA()
+        # ja torna a falta visivel na planilha; este aviso a torna visivel
+        # tambem para quem roda o pipeline, com nome, aba e linha, sem
+        # precisar abrir o Excel para descobrir o que faltou.
+        missing = [tok for tok in required_tokens
+                   if m.get(_DIMENSION_TOKENS[tok][1]) is None]
+        if missing:
+            campos = ", ".join(_DIMENSION_TOKENS[t][1] for t in missing)
+            warnings.append(
+                f"Material '{mat_name}' (linha {r}, aba {new_sheet_name}): a "
+                f"formula do catalogo exige {campos}, mas a peca nao forneceu "
+                f"esse(s) valor(es). A celula de UnitCost vai mostrar #N/A ate "
+                f"alguem preencher -- SEM esse preenchimento o custo deste "
+                f"material nao entra no total."
+            )
         ws.cell(row=r, column=5, value=m.get("size1"))
         ws.cell(row=r, column=6, value=m.get("unit1", ""))
         ws.cell(row=r, column=7, value=m.get("size2"))
