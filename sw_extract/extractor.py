@@ -147,31 +147,106 @@ def get_native_material(model_doc, config_name=""):
 # Propriedades de massa
 # ---------------------------------------------------------------------------
 
+# Fatores de conversao para kg, por unidade de massa. Usados tanto para
+# classificar a unidade do documento (ver _classify_mass_unit) quanto para
+# montar a formula de conversao na planilha (ver translator.py).
+MASS_UNIT_TO_KG = {
+    "kg": 1.0,
+    "g": 0.001,
+    "mg": 0.000001,
+    "lb": 0.45359237,
+    "oz": 0.028349523125,
+}
+
+
+def _classify_mass_unit(ratio, tolerance=0.01):
+    """
+    Recebe a razao (massa em unidades do documento / massa em unidades de
+    sistema) e devolve o nome da unidade do documento, ou None se a razao
+    nao corresponder a nenhuma unidade conhecida.
+
+    Ex.: um documento MMGS devolve gramas, entao a razao e ~1000 e a
+    unidade e "g" (1 kg = 1000 g => fator para kg = 0.001).
+    """
+    if not ratio or ratio <= 0:
+        return None
+    for unit, factor_to_kg in MASS_UNIT_TO_KG.items():
+        # massa_doc = massa_kg / factor_to_kg  =>  ratio esperado = 1/factor
+        expected = 1.0 / factor_to_kg
+        if abs(ratio - expected) <= tolerance * expected:
+            return unit
+    return None
+
+
 def get_mass_properties(model_doc):
     """
-    Retorna massa (kg), volume (m^3) e area de superficie (m^2) -- ASSUMINDO
-    que a API do SolidWorks retorna esses valores em unidades SI
-    independente da unidade de exibicao configurada no documento.
+    Retorna massa, volume e area de superficie em unidades SI (kg, m^3,
+    m^2), FORCANDO o modo de unidades de sistema em vez de supor que a API
+    ja devolve SI.
 
-    ATENCAO -- NAO CONFIRMADO: na pratica, IMassProperty costuma retornar
-    valores no sistema de unidades ATIVO do documento (ex.: um documento
-    com template MMGS pode devolver a massa em GRAMAS, nao kg), entao a
-    suposicao "sempre SI" acima pode estar errada para os templates de
-    peca do time. Se estiver errada e ninguem notar, todo custo de
-    material extraido automaticamente fica silenciosamente 1000x errado.
-    Isso tem que ser o PRIMEIRO teste ao rodar test_connection.py: comparem
-    o valor retornado aqui com a massa de uma peca conhecida (visivel no
-    proprio SolidWorks) antes de confiar em qualquer custo auto-extraido.
+    Como a ambiguidade de unidade foi resolvida (documentacao oficial da
+    API, confirmada em 2026-08-16): IMassProperty.UseSystemUnits aceita
+    True para unidades de SISTEMA (metros, radianos, quilogramas) e False
+    para as unidades do DOCUMENTO; o default e True. Como o default nao e
+    garantido em toda versao/instalacao, este codigo seta a propriedade
+    explicitamente em vez de confiar nele -- e dai vem a garantia de kg.
 
-    CONFIRMADO ao vivo (2026-08-12): a chamada em si funciona e devolve um
-    numero plausivel (nao testamos ainda se o numero bate com a massa REAL
-    de uma peca conhecida -- isso ainda depende de alguem comparar).
+    Alem de forcar SI, a funcao SONDA a unidade do proprio documento: le a
+    massa nos dois modos e compara. A razao entre as duas leituras revela
+    empiricamente em que unidade o documento esta (razao ~1000 => gramas,
+    ~1 => kg, ~2.2046 => libras). Isso e feito por medicao, sem depender de
+    constantes de enum da API (swUnitsMassPropMass), cujos valores
+    numericos variam entre versoes e seriam mais um ponto de erro
+    silencioso. O resultado alimenta o aviso do translator e a formula de
+    conversao escrita na planilha.
+
+    Chaves retornadas:
+        mass_kg              massa em kg (o valor a usar na BOM)
+        volume_m3            volume em m^3
+        surface_area_m2      area de superficie em m^2
+        doc_mass_unit        unidade do documento ("kg", "g", ...) ou None
+        doc_mass_value       massa como o documento a exibe
+        doc_unit_factor_kg   fator que converte doc_mass_value -> kg
+        used_system_units    se conseguimos forcar o modo SI
     """
     mass_prop = model_doc.Extension.CreateMassProperty  # sem parenteses
+
+    used_system_units = True
+    try:
+        mass_prop.UseSystemUnits = True
+    except Exception as exc:
+        used_system_units = False
+        print(f"[aviso] Nao foi possivel forcar UseSystemUnits=True: {exc}")
+
+    mass_si = mass_prop.Mass
+    volume_si = mass_prop.Volume
+    area_si = mass_prop.SurfaceArea
+
+    # --- Sonda a unidade do documento ------------------------------------
+    doc_mass_value = None
+    doc_mass_unit = None
+    try:
+        mass_prop.UseSystemUnits = False
+        doc_mass_value = mass_prop.Mass
+        if mass_si:
+            doc_mass_unit = _classify_mass_unit(doc_mass_value / mass_si)
+    except Exception as exc:
+        print(f"[aviso] Nao foi possivel sondar a unidade do documento: {exc}")
+    finally:
+        # Restaura o modo SI -- o objeto pode ser reutilizado pelo chamador.
+        try:
+            mass_prop.UseSystemUnits = True
+        except Exception:
+            pass
+
     return {
-        "mass_kg": mass_prop.Mass,
-        "volume_m3": mass_prop.Volume,
-        "surface_area_m2": mass_prop.SurfaceArea,
+        "mass_kg": mass_si,
+        "volume_m3": volume_si,
+        "surface_area_m2": area_si,
+        "doc_mass_unit": doc_mass_unit,
+        "doc_mass_value": doc_mass_value,
+        "doc_unit_factor_kg": MASS_UNIT_TO_KG.get(doc_mass_unit),
+        "used_system_units": used_system_units,
     }
 
 

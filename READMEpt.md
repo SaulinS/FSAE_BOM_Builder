@@ -81,13 +81,22 @@ nativo, massa. Se der erro aqui, é mais fácil debugar numa peça simples do
 que numa montagem inteira — resolvam isso antes de ir para o próximo passo.
 
 **O mais importante de conferir nesta etapa:** o valor de `mass_kg`
-impresso precisa bater com a massa real da peça. `get_mass_properties()`
-assume que o SolidWorks sempre devolve a massa em kg, mas isso depende do
-sistema de unidades do template usado (um template MMGS, por exemplo,
-devolveria gramas) — isso ainda não foi confirmado numa máquina real. Se
-esse valor vier errado e ninguém notar aqui, todo custo de material
-auto-extraído dali em diante fica silenciosamente errado (potencialmente
-1000x, se for kg vs. g).
+impresso precisa bater com a massa real da peça, e o bloco de diagnóstico
+de unidade impresso logo abaixo precisa nomear corretamente a unidade que
+o documento de vocês usa.
+
+O `get_mass_properties()` não *supõe* mais kg. Ele seta explicitamente
+`IMassProperty.UseSystemUnits = True` (documentado como retornando metros,
+radianos e quilogramas) e depois **sonda** a unidade do próprio documento,
+lendo a massa nos dois modos e comparando — então um template MMGS que
+exibe gramas é detectado por medição, não por chute. A conversão é escrita
+na planilha como uma fórmula visível do Excel (`=14*0.001`), de modo que
+uma unidade errada aparece na planilha em vez de ficar escondida no
+código. Confirmado contra um cost report real publicado: a BOM espera
+**quilogramas** no `Size1`.
+
+Ainda vale conferir aqui, porque a sonda só confirma coerência entre os
+dois modos da API — não que algum dos dois bata com a realidade física.
 
 Erros esperáveis nessa etapa e o que costumam significar:
 - `AttributeError` em `Get5` → a versão do SW usa uma assinatura diferente

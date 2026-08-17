@@ -78,12 +78,21 @@ and mass. If something fails here, it's much easier to debug on a simple
 part than on a full assembly — fix it before moving on.
 
 **Most important thing to verify at this stage:** the `mass_kg` value
-printed must match the part's real mass. `get_mass_properties()` assumes
-SolidWorks always returns mass in kg, but that depends on the unit system of
-the template used (an MMGS template, for example, would return grams) —
-this has not been confirmed on a real machine yet. If this value comes back
-wrong and nobody notices here, every auto-extracted material cost from then
-on is silently wrong (potentially off by 1000x, kg vs. g).
+printed must match the part's real mass, and the unit diagnostic block
+printed right after it must name the unit your document actually uses.
+
+`get_mass_properties()` no longer *assumes* kg. It explicitly sets
+`IMassProperty.UseSystemUnits = True` (documented to return meters,
+radians and kilograms), and then probes the document's own unit by reading
+the mass in both modes and comparing — so a MMGS template that displays
+grams is detected by measurement rather than guesswork. The conversion is
+then written into the spreadsheet as a visible Excel formula
+(`=14*0.001`), so a wrong unit shows up on the sheet instead of hiding in
+the code. Verified against a real published cost report: the BOM expects
+**kilograms** in `Size1`.
+
+Still worth checking here, because the probe can only confirm consistency
+between the two API modes — not that either matches physical reality.
 
 Expected errors at this stage and what they usually mean:
 - `AttributeError` on `Get5` → the SolidWorks version uses a different
